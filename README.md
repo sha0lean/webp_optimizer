@@ -32,13 +32,26 @@ Le but c'est de pouvoir upload ses assets et les optimiser en une commande.
 
 ## Prérequis & Installation
 
-- `WebP` & `ImageMagick`.
+`WebP` & `ImageMagick`.
 
-```
-brew install imagemagick webp
-```
+- Pour **Windows** : [ImageMagick](`https://imagemagick.org/script/download.php#windows) & [WebP](`https://developers.google.com/speed/webp/download)
 
-- Rend le fichier executable par la `CLI`.
+  Ajouter **WebP** dans le `PATH` (PowerShell en admin):
+
+  ```ps1
+  $Path = [Environment]::GetEnvironmentVariable("Path",       [EnvironmentVariableTarget]::Machine)
+  $WebPBinPath = "C:\Users\shao\libwebp_1.3.2\bin"
+  $NewPath = $Path + ";" + $WebPBinPath
+  [Environment]::SetEnvironmentVariable("Path", $NewPath,       [EnvironmentVariableTarget]::Machine)
+  ```
+
+- Pour **Mac** : [ImageMagick](`https://imagemagick.org/script/download.php#macosx) & [WebP](`https://developers.google.com/speed/webp/download)
+
+  ```
+  brew install imagemagick webp
+  ```
+
+Rend le fichier executable par la `CLI`.
 
 ```bash
 chmod +x webp_image_optimizer.sh
@@ -46,17 +59,22 @@ chmod +x webp_image_optimizer.sh
 
 ## Utilisation
 
-Exécutez le script dans le répertoire contenant vos images :
+Exécutez le script manuellement dans le répertoire contenant vos images :
 
 ```bash
+sur windows :
+.\webp_optimizer.ps1
+
+sur mac :
 ./webp_optimizer.sh
 ```
 
 ou rajouter ce script dans `package.json``
 
-```bash
+```json
 "scripts": {
-    "optimg": "bash src/assets/webp_optimizer.sh"
+    "optimg_mac": "bash src/assets/webp_optimizer_mac.sh",
+    "optimg_win": "powershell -ExecutionPolicy Bypass -File src\\assets\\webp_optimizer_win.ps1",
 }
 ```
 
