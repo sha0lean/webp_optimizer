@@ -1,84 +1,134 @@
+# webp_optimizer_win.ps1
+# PowerShell (Windows only) — ImageMagick + cwebp
+# Install: winget install ImageMagick.Q16-HDRI ; winget install --id=Google.Libwebp -e
+# Run:    powershell -ExecutionPolicy Bypass -File .\webp_optimizer_win.ps1
 
-#!/bin/bash
+# -------------------- Réglages --------------------
+$max_dimension = 1920            # plus grande dimension
+$target_size   = 1048576         # 1 Mo en bytes
+$start_quality = 100             # qualité initiale
+$min_quality   = 10              # stop si on atteint ça
 
-# https://github.com/sha0lean/webp_optimizer
-
-# Script pour convertir des images en format WebP sans modifier les fichiers originaux
-# Ce script recherche des images dans un dossier et ses sous-dossiers,
-# les redimensionne pour que la plus grande dimension ne dépasse pas 1920px,
-# et les convertit en WebP avec une taille inférieure à 1 Mo.
-
-# Dépendances nécessaires : ImageMagick et WebP
-# Télécharger ImageMagick :  https://imagemagick.org/script/download.php#windows
-
-# Télécharger WebP :         https://developers.google.com/speed/webp/download
-
-# Ajouter WebP dans le PATH (PowerShell en admin):
-#      $Path = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::Machine)
-#      $WebPBinPath = "C:\Users\shao\libwebp_1.3.2\bin"
-#      $NewPath = $Path + ";" + $WebPBinPath
-#      [Environment]::SetEnvironmentVariable("Path", $NewPath, [EnvironmentVariableTarget]::Machine)
-
-# Utilisation : chmod +x webp_optimizer.sh
-
-
-
-# Chemin du dossier racine à partir duquel le script est exécuté
-$DIR = Split-Path -Path $MyInvocation.MyCommand.Definition -Parent
-
-# Fonction pour convertir un fichier en WebP
-Write-Host "----------------------------------------------------------------------------------`n"
-function Convert-ToWebP {
-    param (
-        [String]$file
-    )
-
-    $max_dimension = 1920
-    $target_size = 1048576
-    $quality = 100
-
-    $fileNameWithoutExtension = [System.IO.Path]::GetFileNameWithoutExtension($file)
-    $fileExtension = [System.IO.Path]::GetExtension($file)
-    $fileDirectory = [System.IO.Path]::GetDirectoryName($file)
-    $temp_file = Join-Path $fileDirectory "$($fileNameWithoutExtension)_temp$fileExtension"
-    $newfile = Join-Path $fileDirectory "$fileNameWithoutExtension.webp"
-
-    if (-Not (Test-Path $newfile)) {
-        Copy-Item -Path $file -Destination $temp_file
-
-        magick convert $temp_file -resize "$($max_dimension)x$max_dimension>" $temp_file
-
-        do {
-            & cwebp -q $quality $temp_file -o $newfile
-            $new_size = (Get-Item $newfile).length
-            if ($new_size -le $target_size -or $quality -le 10) {
-                break
-            }
-            $quality -= 10
-        } while ($true)
-
-        Remove-Item -Path $temp_file
-
-        $original_size = (Get-Item $file).length
-        $size_diff = $original_size - $new_size
-        $size_diff_mb = "{0:N2}" -f ($size_diff / 1MB)
-
-
-        Write-Host "`n----------------------------------------------------------------------------------`n"
-        Write-Host "Converti:  $file"
-        Write-Host "       ->  $newfile"
-        Write-Host ""
-        Write-Host "Reduction de taille: $size_diff_mb Mo"
-        Write-Host "----------------------------------------------------------------------------------`n"
-    }
-    else {
-        Write-Host "Deja converti (ignoré): `n $file"
-    }
+# -------------------- Helpers --------------------
+function Format-Bytes([long]$b) {
+  if ($b -ge 1MB) { "{0:N1} MB" -f ($b/1MB) }
+  elseif ($b -ge 1KB) { "{0:N0} KB" -f ($b/1KB) }
+  else { "$b B" }
 }
 
-# Exécution de la fonction pour chaque fichier image trouvé qui n'est pas déjà au format WebP
-Get-ChildItem -Path $DIR -Recurse | 
-    Where-Object { -not $_.PSIsContainer -and $_.Name -match "\.(jpg|jpeg|png|tiff|bmp|gif)$" -and -not $_.Name.EndsWith('.webp') } |
-    ForEach-Object {
-        Convert-ToWebP -file $_.FullName
+function Get-Dim([string]$p) {
+  & magick identify -format "%wx%h" -- $p 2>$null
+}
+
+function Write-Summary([string]$src,[string]$dst,[int]$q,[int]$tries) {
+  $srcInfo = Get-Item -LiteralPath $src
+  $dstInfo = Get-Item -LiteralPath $dst
+
+  $srcSize = $srcInfo.Length
+  $dstSize = $dstInfo.Length
+  $pct     = [math]::Round((1 - ($dstSize / [double]$srcSize)) * 100, 1)
+  $srcDim  = Get-Dim $src
+  $dstDim  = Get-Dim $dst
+  $name    = Split-Path $src -Leaf
+
+  $srcFmt  = (Format-Bytes $srcSize).PadLeft(7)
+  $dstFmt  = (Format-Bytes $dstSize).PadLeft(7)
+  $pctFmt  = ("{0,6}" -f "-$pct%")
+
+  # Emojis en littéraux (compat PS5)
+  $ok    = "✅"
+  $arrow = "→"
+  $down  = "🔻"
+  $gear  = "🔧"
+  $frame = "🖼️"
+
+  Write-Host ""
+  Write-Host "$ok $name" -ForegroundColor Green
+  Write-Host "   ↳ $frame $srcDim $arrow $dstDim | $srcFmt $arrow $dstFmt | $down $pctFmt | $gear q=$q ($tries try)" -ForegroundColor DarkGray
+}
+
+
+
+# -------------------- Convertisseur --------------------
+function Convert-ToWebP {
+  param([string]$fileFullPath, [string]$rootDir, [string]$outRoot)
+
+  $dir      = [System.IO.Path]::GetDirectoryName($fileFullPath)
+  $fileName = [System.IO.Path]::GetFileNameWithoutExtension($fileFullPath)
+  $ext      = [System.IO.Path]::GetExtension($fileFullPath)
+
+  # Génère le chemin relatif depuis la racine
+  $relativePath = $fileFullPath.Substring($rootDir.Length).TrimStart('\')
+  $relativeDir  = Split-Path $relativePath -Parent
+
+  # Crée le dossier équivalent dans /compressed
+  $outDir = Join-Path $outRoot $relativeDir
+  if (-not (Test-Path -LiteralPath $outDir)) {
+    New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+  }
+
+  $webpBase = Join-Path $outDir "$fileName.webp"
+  $tempBase = Join-Path $dir "$fileName`_temp$ext"
+
+  # Si déjà converti dans /compressed → skip
+  if (Test-Path -LiteralPath $webpBase) {
+    Write-Host "[SKIP] $(Split-Path $fileFullPath -Leaf) (déjà compressé)"
+    return
+  }
+
+  # Copie + resize temporaire
+  Copy-Item -LiteralPath $fileFullPath -Destination $tempBase -Force
+  & magick $tempBase -resize "$($max_dimension)x$($max_dimension)>" $tempBase 2>$null
+
+  if (-not (Test-Path -LiteralPath $tempBase)) {
+    Write-Host "[ERR] resize manqué: $tempBase"
+    return
+  }
+
+  # Boucle qualité
+  $quality = $start_quality
+  $tries   = 0
+  do {
+    $tries++
+
+    if (Test-Path -LiteralPath $webpBase) {
+      Remove-Item -LiteralPath $webpBase -Force -ErrorAction SilentlyContinue
     }
+
+    $argList = @('-quiet','-q', $quality, '-o', $webpBase, '--', $tempBase)
+    & cwebp @argList *> $null
+    $exit = $LASTEXITCODE
+
+    if ($exit -ne 0) {
+      Remove-Item -LiteralPath $tempBase -ErrorAction SilentlyContinue
+      Write-Host "[ERR] cwebp a échoué ($exit) -> $fileFullPath"
+      return
+    }
+
+    if (-not (Test-Path -LiteralPath $webpBase)) {
+      Remove-Item -LiteralPath $tempBase -ErrorAction SilentlyContinue
+      Write-Host "[ERR] sortie manquante: $webpBase"
+      return
+    }
+
+    $new_size = (Get-Item -LiteralPath $webpBase).Length
+    if ($new_size -le $target_size -or $quality -le $min_quality) { break }
+    else { $quality -= 10 }
+  } while ($true)
+
+  # Nettoyage + résumé
+  Remove-Item -LiteralPath $tempBase -ErrorAction SilentlyContinue
+  Write-Summary -src $fileFullPath -dst $webpBase -q $quality -tries $tries
+}
+
+# -------------------- Lancement --------------------
+$ROOT = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Path $MyInvocation.MyCommand.Definition -Parent }
+$OUT_DIR = Join-Path $ROOT 'compressed'
+
+if (-not (Test-Path -LiteralPath $OUT_DIR)) {
+  New-Item -ItemType Directory -Path $OUT_DIR | Out-Null
+}
+
+Get-ChildItem -Path $ROOT -Recurse -File |
+  Where-Object { $_.Extension -match '\.(jpg|jpeg|png|tif|tiff|bmp|gif)$' } |
+  ForEach-Object { Convert-ToWebP -fileFullPath $_.FullName -rootDir $ROOT -outRoot $OUT_DIR }
